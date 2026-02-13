@@ -1,0 +1,17 @@
+{
+  "thresholds": {
+    "minRemainingMinutes": 60,
+    "maxBlockCostUSD": 15.00,
+    "weeklyBudgetUSD": 100.00,
+    "weeklyStartDay": "monday"
+  },
+  "watch": {
+    "intervalMinutes": 10,
+    "quietHoursStart": null,
+    "quietHoursEnd": null
+  },
+  "execution": {
+    "model": null,
+    "defaultAllowedTools": null
+  }
+}
