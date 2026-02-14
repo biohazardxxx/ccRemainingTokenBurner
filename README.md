@@ -1,14 +1,15 @@
 # ccRemainingTokenBurner
 
-Automatically run queued Claude Code tasks when your billing block capacity is underused. No tokens left on the table.
+Automatically run queued Claude Code tasks when your rate limit capacity is underused. No tokens left on the table.
 
-Claude Code subscriptions have 5-hour billing blocks and weekly limits. Tokens unused within a block are wasted. This tool monitors block usage via [`ccusage`](https://github.com/ryoppippi/ccusage) and automatically runs queued tasks (via `claude -p`) when there's spare capacity.
+Claude Code subscriptions have rolling rate limit windows (5-hour and 7-day). Unused capacity within a window is wasted. This tool queries your current utilization directly from the Anthropic API and automatically runs queued tasks (via `claude -p`) when there's spare capacity.
 
 ## Prerequisites
 
 - **Node.js** >= 18
-- **ccusage** - `npm i -g ccusage`
 - **Claude Code CLI** - authenticated and available as `claude`
+
+Rate limits are fetched directly from the Anthropic API using your Claude Code OAuth credentials (`~/.claude/.credentials.json`). No additional tools required.
 
 ## Quick Start
 
@@ -44,7 +45,7 @@ burn [options]
 Modes:
   --once              Run one check cycle then exit (default)
   --watch, -w         Run in watch mode (check every N minutes)
-  --status, -s        Show current block status + task queue dashboard
+  --status, -s        Show current rate limit status + task queue dashboard
   --dry-run, -d       Show what would happen without executing
 
 Options:
@@ -61,10 +62,7 @@ Edit `config.json` to control thresholds and behavior. All fields are optional �
 ```json
 {
   "thresholds": {
-    "minRemainingMinutes": 60,
-    "maxBlockCostUSD": 15.00,
-    "weeklyBudgetUSD": 100.00,
-    "weeklyStartDay": "monday"
+    "maxUtilization": 0.80
   },
   "watch": {
     "intervalMinutes": 10,
@@ -82,10 +80,7 @@ Edit `config.json` to control thresholds and behavior. All fields are optional �
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `minRemainingMinutes` | `60` | Only run tasks if the block has at least this many minutes left |
-| `maxBlockCostUSD` | `15.00` | Only run if block cost is **below** this (block is underused) |
-| `weeklyBudgetUSD` | `100.00` | Weekly spending cap across all blocks |
-| `weeklyStartDay` | `"monday"` | Which day resets the weekly budget counter |
+| `maxUtilization` | `0.80` | Only run tasks if the binding window utilization is **below** this (0.0–1.0). At 0.80, tasks run while less than 80% of your quota is used. |
 
 ### Watch
 
@@ -155,14 +150,34 @@ off ──[user enables]──> on ──[picked]──> running ──┬──
 
 Each cycle evaluates these conditions in order:
 
-1. **Active block?** — Fetch via `ccusage blocks --active --json`. No block → skip.
-2. **Enough time?** — `remainingMinutes >= minRemainingMinutes`. Too little → skip.
-3. **Block underused?** — `totalCost <= maxBlockCostUSD`. Already well-used → skip.
-4. **Weekly budget?** — `weeklyCost < weeklyBudgetUSD`. Over budget → skip.
-5. **Calculate budget** — `min(weeklyBudget - weeklyCost, maxBlockCost - blockCost)`
-6. **Pick task** — Highest-priority task with `"status": "on"` that fits within budget.
-7. **Execute** — `claude -p "<prompt>" --output-format json [options]`
-8. **Update** — Set task status, append to `history.json`.
+1. **Fetch rate limits** — Makes a minimal API call (~9 tokens) to read `anthropic-ratelimit-unified-*` response headers.
+2. **Rate limited?** — If the API returns 429, skip.
+3. **Any window blocked?** — If any rate limit window has status other than `"allowed"`, skip.
+4. **Utilization check** — Find the binding window (the bottleneck window reported by the API). If its utilization >= `maxUtilization`, the quota is well-used → skip.
+5. **Pick task** — Highest-priority task with `"status": "on"`.
+6. **Execute** — `claude -p "<prompt>" --output-format json [options]`
+7. **Update** — Set task status, append to `history.json`.
+
+## Rate Limit Windows
+
+The API reports utilization across multiple rolling windows:
+
+| Window | Description |
+|--------|-------------|
+| `5h` | 5-hour rolling window |
+| `7d` | 7-day rolling window |
+| `7d_sonnet` | 7-day Sonnet-specific window |
+| `overage` | Overage allowance |
+
+The **binding window** (`representativeClaim`) is the window currently closest to its limit — the one that would rate-limit you first. The decision engine uses this window for its utilization check.
+
+You can also query rate limits standalone:
+
+```bash
+node lib/get-rate-limits.mjs          # human-readable output
+node lib/get-rate-limits.mjs --json   # JSON for scripting
+node lib/get-rate-limits.mjs --debug  # show raw headers
+```
 
 ## Watch Mode
 
@@ -182,8 +197,9 @@ burn --status
 ```
 
 Shows at a glance:
-- Current block (start, end, remaining time, cost)
-- Weekly cost vs. budget
+- All rate limit windows with utilization bars, status, and reset times
+- Subscription type and tier
+- Binding window identification
 - Threshold evaluation result with reason
 - Full task queue table
 - Last 10 execution history entries
@@ -194,8 +210,8 @@ Shows at a glance:
 bin/
   burn.js              CLI entry point
 lib/
-  block-status.js      Fetch & parse ccusage block data
-  weekly-tracker.js    Weekly cost aggregation
+  get-rate-limits.mjs  Query Anthropic API for rate limit headers
+  rate-limits.js       Rate limit fetcher (wraps get-rate-limits.mjs)
   threshold.js         Decision engine (pure, no side effects)
   task-manager.js      Load, pick, update tasks.json
   executor.js          Spawn claude -p processes

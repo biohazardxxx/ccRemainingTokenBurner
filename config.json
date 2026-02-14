@@ -1,9 +1,6 @@
 {
   "thresholds": {
-    "minRemainingMinutes": 60,
-    "maxBlockCostUSD": 15.00,
-    "weeklyBudgetUSD": 100.00,
-    "weeklyStartDay": "monday"
+    "maxUtilization": 0.80
   },
   "watch": {
     "intervalMinutes": 10,

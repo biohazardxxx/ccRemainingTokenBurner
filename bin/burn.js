@@ -3,8 +3,7 @@
 import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { getActiveBlock } from '../lib/block-status.js';
-import { getWeeklyCost } from '../lib/weekly-tracker.js';
+import { fetchRateLimits, WINDOW_LABELS } from '../lib/rate-limits.js';
 import { evaluate, isQuietHours } from '../lib/threshold.js';
 import { loadTasks, saveTasks, pickTask, updateTaskStatus, getTaskSummary } from '../lib/task-manager.js';
 import { executeTask } from '../lib/executor.js';
@@ -59,14 +58,14 @@ function parseArgs(argv) {
 
 function showHelp() {
   console.log(`
-burn - Automatically run Claude Code tasks when billing block capacity is underused
+burn - Automatically run Claude Code tasks when rate limit capacity is underused
 
 Usage: burn [options]
 
 Modes:
   --once              Run one check cycle then exit (default)
   --watch, -w         Run in watch mode (check every N minutes)
-  --status, -s        Show current block status + task queue dashboard
+  --status, -s        Show current rate limit status + task queue dashboard
   --dry-run, -d       Show what would happen without executing
 
 Options:
@@ -79,7 +78,7 @@ Examples:
   burn                     Check once and run a task if conditions met
   burn --watch             Continuously monitor and run tasks
   burn --dry-run           Preview without executing
-  burn --status            Dashboard view of block + tasks
+  burn --status            Dashboard view of rate limits + tasks
 `.trim());
 }
 
@@ -88,10 +87,7 @@ Examples:
 function loadConfig(configPath) {
   const defaults = {
     thresholds: {
-      minRemainingMinutes: 60,
-      maxBlockCostUSD: 15.0,
-      weeklyBudgetUSD: 100.0,
-      weeklyStartDay: 'monday',
+      maxUtilization: 0.80,
     },
     watch: {
       intervalMinutes: 10,
@@ -123,33 +119,79 @@ function loadConfig(configPath) {
   }
 }
 
+// --- Utilization Bar ---
+
+function makeBar(utilization, width = 30) {
+  const filled = Math.round(utilization * width);
+  const empty = width - filled;
+  return '[' + '#'.repeat(filled) + '-'.repeat(empty) + ']';
+}
+
+function formatDuration(ms) {
+  if (ms <= 0) return 'now';
+  const totalMin = Math.ceil(ms / 60000);
+  if (totalMin < 60) return `in ${totalMin}m`;
+  const h = Math.floor(totalMin / 60);
+  const m = totalMin % 60;
+  if (h < 24) return `in ${h}h ${m}m`;
+  const d = Math.floor(h / 24);
+  const remH = h % 24;
+  return `in ${d}d ${remH}h`;
+}
+
 // --- Status Dashboard ---
 
-function showStatus(config, tasksPath) {
+async function showStatus(config, tasksPath) {
   const historyPath = resolve(dirname(tasksPath), 'history.json');
 
-  logger.header('Block Status');
-  const block = getActiveBlock();
-  if (block) {
-    console.log(`  Start:     ${block.start.toLocaleString()}`);
-    console.log(`  End:       ${block.end.toLocaleString()}`);
-    console.log(`  Remaining: ${block.remainingMinutes} minutes`);
-    console.log(`  Cost:      $${block.totalCost.toFixed(2)}`);
+  logger.header('Rate Limits');
+  const rateLimits = await fetchRateLimits();
+
+  if (rateLimits) {
+    if (rateLimits.subscription) {
+      console.log(`  Subscription: ${rateLimits.subscription}`);
+    }
+    if (rateLimits.tier) {
+      console.log(`  Tier:         ${rateLimits.tier}`);
+    }
+    console.log(`  Status:       ${rateLimits.meta.overallStatus ?? 'unknown'}`);
+    if (rateLimits.meta.representativeClaim) {
+      console.log(`  Binding:      ${rateLimits.meta.representativeClaim}`);
+    }
+    console.log('');
+
+    for (const [name, data] of Object.entries(rateLimits.windows)) {
+      const label = WINDOW_LABELS[name] || name;
+      const pctUsed = ((data.utilization ?? 0) * 100).toFixed(1);
+      const pctFree = (((1 - (data.utilization ?? 0)) * 100)).toFixed(1);
+      const bar = makeBar(data.utilization ?? 0);
+      const statusIcon = data.status === 'allowed' ? 'OK' : 'BLOCKED';
+
+      let resetStr = '';
+      if (data.reset) {
+        const diffMs = data.reset * 1000 - Date.now();
+        if (diffMs > 0) {
+          resetStr = ` | resets ${formatDuration(diffMs)}`;
+        }
+      }
+
+      console.log(`  ${label} [${statusIcon}]`);
+      console.log(`    ${bar} ${pctUsed}% used (${pctFree}% remaining)${resetStr}`);
+      console.log('');
+    }
   } else {
-    console.log('  No active block');
+    console.log('  Failed to fetch rate limits');
   }
 
-  logger.header('Weekly Cost');
-  const weeklyCost = getWeeklyCost(config.thresholds.weeklyStartDay);
-  const weeklyBudget = config.thresholds.weeklyBudgetUSD;
-  console.log(`  This week: $${weeklyCost.toFixed(2)} / $${weeklyBudget.toFixed(2)}`);
-
   logger.header('Threshold Evaluation');
-  const decision = evaluate({ block, weeklyCost, config });
+  const decision = evaluate({ rateLimits, config });
   console.log(`  Should run: ${decision.shouldRun ? 'YES' : 'NO'}`);
   console.log(`  Reason:     ${decision.reason}`);
-  if (decision.availableBudget > 0) {
-    console.log(`  Budget:     $${decision.availableBudget.toFixed(2)}`);
+  if (decision.bindingWindow) {
+    console.log(`  Window:     ${decision.bindingWindow}`);
+  }
+  if (decision.utilization != null) {
+    console.log(`  Utilization: ${(decision.utilization * 100).toFixed(1)}%`);
   }
 
   logger.header('Task Queue');
@@ -172,27 +214,24 @@ function showStatus(config, tasksPath) {
 
 // --- Core Cycle ---
 
-function runCycle(config, tasksPath, dryRun) {
+async function runCycle(config, tasksPath, dryRun) {
   const historyPath = resolve(dirname(tasksPath), 'history.json');
 
-  // 1. Fetch active block
-  logger.info('Checking block status...');
-  const block = getActiveBlock();
+  // 1. Fetch rate limits
+  logger.info('Checking rate limits...');
+  const rateLimits = await fetchRateLimits();
 
-  // 2. Fetch weekly cost
-  const weeklyCost = getWeeklyCost(config.thresholds.weeklyStartDay);
-
-  // 3. Evaluate thresholds
-  const decision = evaluate({ block, weeklyCost, config });
+  // 2. Evaluate thresholds
+  const decision = evaluate({ rateLimits, config });
   logger.info(`Decision: ${decision.reason}`);
 
   if (!decision.shouldRun) {
     return;
   }
 
-  // 4. Pick a task
+  // 3. Pick a task
   const taskData = loadTasks(tasksPath);
-  const task = pickTask(taskData, decision.availableBudget);
+  const task = pickTask(taskData);
 
   if (!task) {
     logger.info('No eligible tasks in queue');
@@ -206,14 +245,14 @@ function runCycle(config, tasksPath, dryRun) {
     return;
   }
 
-  // 5. Mark as running
+  // 4. Mark as running
   updateTaskStatus(taskData, task.id, 'running');
   saveTasks(tasksPath, taskData);
 
-  // 6. Execute
+  // 5. Execute
   const result = executeTask(task, config);
 
-  // 7. Update status
+  // 6. Update status
   let newStatus;
   if (result.success) {
     newStatus = task.repeat ? 'on' : 'done';
@@ -223,7 +262,7 @@ function runCycle(config, tasksPath, dryRun) {
   updateTaskStatus(taskData, task.id, newStatus);
   saveTasks(tasksPath, taskData);
 
-  // 8. Log to history
+  // 7. Log to history
   appendRecord(historyPath, {
     taskId: task.id,
     taskName: task.name,
@@ -255,7 +294,7 @@ async function main() {
   const config = loadConfig(args.configPath);
 
   if (args.status) {
-    showStatus(config, args.tasksPath);
+    await showStatus(config, args.tasksPath);
     process.exit(0);
   }
 
@@ -266,7 +305,7 @@ async function main() {
     );
   } else {
     // --once (default)
-    runCycle(config, args.tasksPath, args.dryRun);
+    await runCycle(config, args.tasksPath, args.dryRun);
   }
 }
 
