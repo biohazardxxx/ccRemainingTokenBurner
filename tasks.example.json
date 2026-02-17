@@ -1,0 +1,28 @@
+{
+  "tasks": [
+    {
+      "id": "example-audit",
+      "name": "Example: Audit a directory",
+      "prompt": "Review all files in ./src/ for bugs and security issues. Write a report to ./reports/audit.md. When done, set your task status to off in tasks.json.",
+      "projectDir": "/path/to/your/project",
+      "status": "on",
+      "priority": 1,
+      "model": null,
+      "allowedTools": null,
+      "maxBudgetUSD": 2,
+      "repeat": false
+    },
+    {
+      "id": "example-docs",
+      "name": "Example: Generate documentation",
+      "prompt": "Read all source files and generate comprehensive API docs. Write to ./reports/docs.md. When done, set your task status to off.",
+      "projectDir": "/path/to/your/project",
+      "status": "off",
+      "priority": 2,
+      "model": null,
+      "allowedTools": null,
+      "maxBudgetUSD": 1,
+      "repeat": false
+    }
+  ]
+}

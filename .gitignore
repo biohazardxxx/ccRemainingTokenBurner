@@ -1,1 +1,11 @@
-nul
+# Task definitions (private, workspace-specific)
+tasks.json
+
+# Reports (local output, not for remote)
+reports/
+
+# History (local state)
+history.json
+
+# Config (may contain sensitive settings)
+config.json
