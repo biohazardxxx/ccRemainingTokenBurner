@@ -9,3 +9,6 @@ history.json
 
 # Config (may contain sensitive settings)
 config.json
+
+# Run context (local state between runs)
+context/

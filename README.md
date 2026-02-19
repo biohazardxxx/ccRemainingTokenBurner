@@ -98,6 +98,7 @@ Overnight ranges work correctly — `"23:00"` to `"07:00"` suppresses from 11 PM
 |-------|---------|-------------|
 | `model` | `null` | Default Claude model for all tasks (overridable per-task) |
 | `defaultAllowedTools` | `null` | Default allowed tools (overridable per-task) |
+| `yolo` | `false` | Enable YOLO mode globally (`--dangerously-skip-permissions`). Skips all permission prompts. Can also be set per-task. |
 
 ## Task Queue
 
@@ -136,6 +137,7 @@ Define tasks in `tasks.json`:
 | `allowedTools` | No | Override allowed tools for this task |
 | `maxBudgetUSD` | No | Per-task cost cap (`--max-budget-usd`) |
 | `repeat` | No | If `true`, resets to `"on"` after completion |
+| `yolo` | No | Enable YOLO mode for this task (overrides config default) |
 
 ### Status Lifecycle
 
@@ -204,6 +206,28 @@ Shows at a glance:
 - Full task queue table
 - Last 10 execution history entries
 
+## Run Context (Continuity Between Runs)
+
+When a task completes (success or failure), the executor saves a context summary to `context/<taskId>.md`. On the next run of the same task, this context is automatically prepended to the prompt, giving Claude awareness of what happened last time.
+
+This is useful for:
+- **Repeating tasks** that build on previous work
+- **Failed tasks** that need to retry — Claude knows what went wrong
+- **Multi-session work** where a task is too large for a single run
+
+Context files are kept concise (~4000 chars max) and are gitignored (local state only).
+
+## systemd Service
+
+For production use, install as a systemd service so the watch mode survives reboots and shell disconnects:
+
+```bash
+sudo ./install-service.sh           # Install & start
+sudo ./install-service.sh --uninstall  # Remove
+systemctl status token-burner       # Check status
+journalctl -u token-burner -f       # Follow logs
+```
+
 ## Project Structure
 
 ```
@@ -214,13 +238,16 @@ lib/
   rate-limits.js       Rate limit fetcher (wraps get-rate-limits.mjs)
   threshold.js         Decision engine (pure, no side effects)
   task-manager.js      Load, pick, update tasks.json
-  executor.js          Spawn claude -p processes
+  executor.js          Spawn claude -p processes + context management
   scheduler.js         Watch mode loop
   history.js           Execution log management
   logger.js            Formatted console output
+install-service.sh     systemd service installer
 config.json            User configuration
 tasks.json             Task queue
 history.json           Auto-generated execution log
+context/               Run context for task continuity (gitignored)
+reports/               Task output reports (gitignored)
 ```
 
 Zero npm dependencies. Pure Node.js built-in modules only.

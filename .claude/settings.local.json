@@ -1,13 +1,11 @@
 {
   "permissions": {
     "allow": [
-      "Bash(ccusage --help:*)",
-      "Bash(ccusage blocks:*)",
-      "Bash(ccusage monthly:*)",
-      "Bash(node --version:*)",
-      "Bash(node -e:*)",
-      "Bash(claude:*)",
-      "Bash(node:*)"
+      "Bash(*)",
+      "Read(*)",
+      "Write(*)",
+      "Edit(*)",
+      "mcp__*"
     ]
   }
 }
