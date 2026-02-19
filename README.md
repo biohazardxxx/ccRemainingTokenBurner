@@ -137,7 +137,8 @@ Define tasks in `tasks.json`:
 | `allowedTools` | No | Override allowed tools for this task |
 | `maxBudgetUSD` | No | Per-task cost cap (`--max-budget-usd`) |
 | `repeat` | No | If `true`, resets to `"on"` after completion |
-| `yolo` | No | Enable YOLO mode for this task (overrides config default) |
+| `yolo` | No | Enable YOLO mode for this task (overrides config default, not available as root) |
+| `permissions` | No | Array of extra Claude Code permissions for this task (merged with base permissions) |
 
 ### Status Lifecycle
 
@@ -205,6 +206,22 @@ Shows at a glance:
 - Threshold evaluation result with reason
 - Full task queue table
 - Last 10 execution history entries
+
+## Task-Specific Permissions
+
+Every task gets a base set of safe coding permissions (Read, Write, Edit, git, python, node, grep, find, etc.). Tasks that need more can specify extra permissions:
+
+```json
+{
+  "id": "web-research-task",
+  "permissions": ["Bash(curl:*)", "Bash(wget:*)"],
+  "prompt": "..."
+}
+```
+
+The executor merges base + task-specific permissions into `.claude/settings.local.json` in the task's `projectDir` before each run. This way a web research task can fetch URLs while a code review task stays sandboxed.
+
+Base permissions include: file operations, search tools, git, python/node/npm/pip, text processing (sed/awk/sort/diff), and common utilities. Notably excluded from base: `rm`, `curl`, `wget`, `apt`, `systemctl`, `sudo`.
 
 ## Run Context (Continuity Between Runs)
 
